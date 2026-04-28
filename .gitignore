@@ -1,0 +1,5 @@
+*.bak
+*.zip
+__MACOSX/
+Thumbs.db
+.DS_Store
