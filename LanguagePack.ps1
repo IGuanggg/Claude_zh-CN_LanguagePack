@@ -126,6 +126,20 @@ function Backup-Once {
     }
 }
 
+function Copy-FileEnsuringParent {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath
+    )
+
+    $destinationDir = Split-Path -Parent $DestinationPath
+    if (-not (Test-Path -LiteralPath $destinationDir)) {
+        New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+    }
+
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+}
+
 function Restore-Backup {
     param([string]$Path)
     $backup = "$Path.bak"
@@ -896,9 +910,9 @@ try {
         Write-Info "Claude locale was restored to en-US."
     } else {
         [void](Restore-Backup -Path $englishLanguageFile)
-        Copy-Item -LiteralPath $desktopShellLanguageFile -Destination $targetLanguageFile -Force
-        Copy-Item -LiteralPath $ionLanguageFile -Destination $ionTargetLanguageFile -Force
-        Copy-Item -LiteralPath $statsigLanguageFile -Destination $statsigTargetLanguageFile -Force
+        Copy-FileEnsuringParent -SourcePath $desktopShellLanguageFile -DestinationPath $targetLanguageFile
+        Copy-FileEnsuringParent -SourcePath $ionLanguageFile -DestinationPath $ionTargetLanguageFile
+        Copy-FileEnsuringParent -SourcePath $statsigLanguageFile -DestinationPath $statsigTargetLanguageFile
         Write-Info "Installed desktop shell language pack: $targetLanguageFile"
         Write-Info "Installed app language pack: $ionTargetLanguageFile"
         Write-Info "Installed statsig language pack: $statsigTargetLanguageFile"
