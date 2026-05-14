@@ -851,13 +851,21 @@ function Get-LatestClaudeApp {
         }
     }
 
+    if ($candidates.Count -eq 0) {
+        $msixAppPaths = @(Get-ClaudeMsixAppPaths | Where-Object { Test-ClaudeProtectedAppPath -Path $_ })
+        if ($msixAppPaths -and $msixAppPaths.Count -gt 0) {
+            $copyAppPath = Copy-ClaudeMsixAppToWritablePath -SourceAppPath $msixAppPaths[0]
+            Add-ClaudeAppCandidate -Candidates $candidates -Path $copyAppPath
+        }
+    }
+
     $apps = $candidates | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }
 
     if (-not $apps -or $apps.Count -eq 0) {
         $msixInstalls = Get-ClaudeMsixInstalls
         if ($msixInstalls -and $msixInstalls.Count -gt 0) {
             $msixText = $msixInstalls -join "; "
-            throw "Detected MSIX/Store Claude installation: $msixText. Windows protects MSIX app files under WindowsApps, so this installer will not patch or copy it. Use a writable portable/classic Claude directory instead, or set CLAUDE_INSTALL_DIR to a writable Claude app directory that contains a resources folder."
+            throw "Detected MSIX/Store Claude installation: $msixText. Auto-copy to writable path failed. Please set CLAUDE_INSTALL_DIR to a writable Claude app directory that contains a resources folder, or install Claude using the classic installer."
         }
 
         $searchedText = $searchedRoots -join "; "
