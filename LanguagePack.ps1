@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $script:ClaudeWritableCopyPath = $null
+$script:ClaudeMsixConfigSourcePath = $null
 
 function Write-Info {
     param([string]$Message)
@@ -33,6 +34,16 @@ function Write-JsonFile {
     [System.IO.File]::WriteAllText($Path, $json + [Environment]::NewLine, $Utf8NoBom)
 }
 
+function Get-JsonPropertyNames {
+    param([object]$Value)
+
+    if (-not $Value) {
+        return @()
+    }
+
+    return @($Value.PSObject.Properties.Name)
+}
+
 function Set-JsonProperty {
     param(
         [string]$Path,
@@ -50,6 +61,58 @@ function Set-JsonProperty {
         $json.$Name = $Value
     }
     Write-JsonFile -Path $Path -Value $json
+}
+
+function Merge-JsonFileMissingProperties {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path -LiteralPath $SourcePath)) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $TargetPath)) {
+        $targetDir = Split-Path -Parent $TargetPath
+        if (-not (Test-Path -LiteralPath $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir | Out-Null
+        }
+        Copy-Item -LiteralPath $SourcePath -Destination $TargetPath -Force
+        Write-Info "Migrated Claude config: $TargetPath"
+        return
+    }
+
+    try {
+        $sourceJson = Read-JsonFile -Path $SourcePath
+        $targetJson = Read-JsonFile -Path $TargetPath
+        $sourceNames = Get-JsonPropertyNames -Value $sourceJson
+        $targetNames = Get-JsonPropertyNames -Value $targetJson
+
+        if (($targetNames.Count -le 1) -and ($targetNames -contains "locale") -and ($sourceNames.Count -gt 1)) {
+            Backup-Once -Path $TargetPath
+            Copy-Item -LiteralPath $SourcePath -Destination $TargetPath -Force
+            Write-Info "Replaced generated config with existing MSIX Claude config: $TargetPath"
+            return
+        }
+
+        $changed = $false
+        foreach ($name in $sourceNames) {
+            if ($targetNames -contains $name) {
+                continue
+            }
+            $targetJson | Add-Member -NotePropertyName $name -NotePropertyValue $sourceJson.$name
+            $changed = $true
+        }
+
+        if ($changed) {
+            Backup-Once -Path $TargetPath
+            Write-JsonFile -Path $TargetPath -Value $targetJson
+            Write-Info "Merged missing MSIX Claude config fields: $TargetPath"
+        }
+    } catch {
+        Write-Info "Config merge failed; keeping existing target config. Source: $SourcePath"
+    }
 }
 
 function Backup-Once {
@@ -325,6 +388,103 @@ function Get-ClaudeWritableCopyRoot {
     }
 
     return Join-Path $env:LOCALAPPDATA "ClaudeChinesePack\MSIXCopy"
+}
+
+function Get-ClaudeMsixPackageRoots {
+    $roots = @()
+
+    try {
+        $packages = Get-AppxPackage -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -eq "Claude" -or
+                $_.Name -like "Anthropic.Claude*" -or
+                $_.PackageFamilyName -like "Claude_*"
+            }
+
+        foreach ($package in $packages) {
+            if ($env:LOCALAPPDATA -and $package.PackageFamilyName) {
+                $roots += Join-Path (Join-Path $env:LOCALAPPDATA "Packages") $package.PackageFamilyName
+            }
+        }
+    } catch {}
+
+    if ($env:LOCALAPPDATA) {
+        $roots += Join-Path $env:LOCALAPPDATA "Packages\Claude_pzs8sxrjxfjjc"
+    }
+
+    return $roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+}
+
+function Get-ClaudeMsixDataDirs {
+    $dirs = @()
+
+    foreach ($packageRoot in Get-ClaudeMsixPackageRoots) {
+        $dirs += Join-Path $packageRoot "LocalCache\Roaming\Claude"
+        $dirs += Join-Path $packageRoot "LocalCache\Local\Claude"
+        $dirs += Join-Path $packageRoot "RoamingState\Claude"
+    }
+
+    return $dirs | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+}
+
+function Copy-ClaudeDirectoryMissingItems {
+    param(
+        [string]$SourceDir,
+        [string]$TargetDir
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceDir)) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        New-Item -ItemType Directory -Path $TargetDir | Out-Null
+    }
+
+    $children = Get-ChildItem -LiteralPath $SourceDir -Force -ErrorAction SilentlyContinue
+    foreach ($child in $children) {
+        $targetChild = Join-Path $TargetDir $child.Name
+        if (-not (Test-Path -LiteralPath $targetChild)) {
+            Copy-Item -LiteralPath $child.FullName -Destination $targetChild -Recurse -Force
+            continue
+        }
+
+        if ($child.PSIsContainer) {
+            Copy-ClaudeDirectoryMissingItems -SourceDir $child.FullName -TargetDir $targetChild
+        }
+    }
+}
+
+function Initialize-ClaudeConfigFromMsix {
+    param([string]$TargetConfigFile)
+
+    if (-not $script:ClaudeWritableCopyPath) {
+        return
+    }
+
+    $targetDir = Split-Path -Parent $TargetConfigFile
+    $sourceDirs = @(Get-ClaudeMsixDataDirs | Sort-Object -Property @{
+        Expression = {
+            $config = Join-Path $_ "config.json"
+            if (Test-Path -LiteralPath $config) {
+                (Get-Item -LiteralPath $config).LastWriteTimeUtc
+            } else {
+                [datetime]::MinValue
+            }
+        }
+        Descending = $true
+    })
+
+    foreach ($sourceDir in $sourceDirs) {
+        $sourceConfig = Join-Path $sourceDir "config.json"
+        Copy-ClaudeDirectoryMissingItems -SourceDir $sourceDir -TargetDir $targetDir
+        if (Test-Path -LiteralPath $sourceConfig) {
+            Merge-JsonFileMissingProperties -SourcePath $sourceConfig -TargetPath $TargetConfigFile
+            $script:ClaudeMsixConfigSourcePath = $sourceConfig
+            Write-Info "MSIX Claude profile was migrated from: $sourceDir"
+            return
+        }
+    }
 }
 
 function Get-ClaudeMsixAppPaths {
@@ -722,6 +882,7 @@ try {
     Write-Info "Claude version directory: $($app.FullName)"
     Stop-Claude
 
+    Initialize-ClaudeConfigFromMsix -TargetConfigFile $configFile
     Backup-Once -Path $configFile
     Backup-Once -Path $englishLanguageFile
 
