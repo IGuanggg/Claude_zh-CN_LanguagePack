@@ -73,6 +73,299 @@ function Restore-Backup {
     return $false
 }
 
+function Get-ClaudeAppVersion {
+    param([string]$Path)
+
+    $name = Split-Path -Leaf $Path
+    if ($name -match "^app-(.+)$") {
+        try { return [version]$Matches[1] } catch { return [version]"0.0.0" }
+    }
+
+    $parent = Split-Path -Parent $Path
+    $packageName = Split-Path -Leaf $parent
+    if ($packageName -match "^Claude_(.+?)_") {
+        try { return [version]$Matches[1] } catch { return [version]"0.0.0" }
+    }
+
+    return [version]"0.0.0"
+}
+
+function Add-ClaudeAppCandidate {
+    param(
+        [System.Collections.ArrayList]$Candidates,
+        [string]$Path
+    )
+
+    if (-not $Path) {
+        return
+    }
+
+    $resources = Join-Path $Path "resources"
+    if (-not (Test-Path -LiteralPath $resources)) {
+        return
+    }
+
+    $fullPath = (Resolve-Path -LiteralPath $Path).Path
+    if ($Candidates | Where-Object { $_.FullName -eq $fullPath }) {
+        return
+    }
+
+    [void]$Candidates.Add([pscustomobject]@{
+        FullName = $fullPath
+        Name = Split-Path -Leaf $fullPath
+        Version = Get-ClaudeAppVersion -Path $fullPath
+    })
+}
+
+function Add-ClaudeAppCandidatesFromPath {
+    param(
+        [System.Collections.ArrayList]$Candidates,
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    $expandedPath = [Environment]::ExpandEnvironmentVariables($Path.Trim('"'))
+    if (-not (Test-Path -LiteralPath $expandedPath)) {
+        return
+    }
+
+    $item = Get-Item -LiteralPath $expandedPath -ErrorAction SilentlyContinue
+    if (-not $item) {
+        return
+    }
+
+    if (-not $item.PSIsContainer) {
+        $expandedPath = $item.DirectoryName
+    }
+
+    if ((Split-Path -Leaf $expandedPath) -eq "resources") {
+        Add-ClaudeAppCandidate -Candidates $Candidates -Path (Split-Path -Parent $expandedPath)
+        return
+    }
+
+    Add-ClaudeAppCandidate -Candidates $Candidates -Path $expandedPath
+    Add-ClaudeAppCandidate -Candidates $Candidates -Path (Join-Path $expandedPath "app")
+
+    $versionDirs = Get-ChildItem -LiteralPath $expandedPath -Directory -Filter "app-*" -ErrorAction SilentlyContinue
+    foreach ($versionDir in $versionDirs) {
+        Add-ClaudeAppCandidate -Candidates $Candidates -Path $versionDir.FullName
+    }
+}
+
+function Get-ClaudeExecutablePathsFromShortcut {
+    $paths = @()
+    $shortcutRoots = @(
+        [Environment]::GetFolderPath("StartMenu"),
+        [Environment]::GetFolderPath("CommonStartMenu"),
+        [Environment]::GetFolderPath("Desktop"),
+        [Environment]::GetFolderPath("CommonDesktopDirectory")
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+
+    if (-not $shortcutRoots -or $shortcutRoots.Count -eq 0) {
+        return $paths
+    }
+
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+    } catch {
+        return $paths
+    }
+
+    foreach ($root in $shortcutRoots) {
+        $shortcuts = Get-ChildItem -LiteralPath $root -Recurse -Filter "*Claude*.lnk" -File -ErrorAction SilentlyContinue
+        foreach ($shortcutFile in $shortcuts) {
+            try {
+                $shortcut = $shell.CreateShortcut($shortcutFile.FullName)
+                if ($shortcut.TargetPath) {
+                    $paths += $shortcut.TargetPath
+                }
+                if ($shortcut.WorkingDirectory) {
+                    $paths += $shortcut.WorkingDirectory
+                }
+            } catch {}
+        }
+    }
+
+    return $paths
+}
+
+function Get-ClaudePathsFromRegistry {
+    $paths = @()
+    $registryRoots = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+
+    foreach ($registryRoot in $registryRoots) {
+        $apps = Get-ItemProperty -Path $registryRoot -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like "*Claude*" -or $_.Publisher -like "*Anthropic*" }
+
+        foreach ($app in $apps) {
+            if ($app.InstallLocation) {
+                $paths += $app.InstallLocation
+            }
+            if ($app.DisplayIcon -match '"([^"]+\.exe)"|([A-Za-z]:\\[^,]+\.exe)') {
+                if ($Matches[1]) {
+                    $paths += $Matches[1]
+                } elseif ($Matches[2]) {
+                    $paths += $Matches[2]
+                }
+            }
+            if ($app.UninstallString -match '"([^"]+\.exe)"|([A-Za-z]:\\[^\s]+\.exe)') {
+                if ($Matches[1]) {
+                    $paths += $Matches[1]
+                } elseif ($Matches[2]) {
+                    $paths += $Matches[2]
+                }
+            }
+        }
+    }
+
+    return $paths
+}
+
+function Get-ClaudePathsFromProcess {
+    $paths = @()
+    try {
+        $processes = Get-CimInstance Win32_Process -Filter "Name = 'claude.exe'" -ErrorAction SilentlyContinue
+        foreach ($process in $processes) {
+            if ($process.ExecutablePath) {
+                $paths += $process.ExecutablePath
+            }
+        }
+    } catch {
+        $processes = Get-Process -Name "claude" -ErrorAction SilentlyContinue
+        foreach ($process in $processes) {
+            try {
+                if ($process.Path) {
+                    $paths += $process.Path
+                }
+            } catch {}
+        }
+    }
+
+    return $paths
+}
+
+function Get-ClaudePathsFromCommand {
+    $paths = @()
+    $commands = Get-Command "claude.exe" -ErrorAction SilentlyContinue
+    foreach ($command in $commands) {
+        if ($command.Source) {
+            $paths += $command.Source
+        }
+    }
+    return $paths
+}
+
+function Get-ClaudeInstallRoots {
+    $roots = @()
+
+    if ($env:CLAUDE_INSTALL_DIR) {
+        $roots += [Environment]::ExpandEnvironmentVariables($env:CLAUDE_INSTALL_DIR)
+    }
+    if ($env:LOCALAPPDATA) {
+        $roots += Join-Path $env:LOCALAPPDATA "AnthropicClaude"
+        $roots += Join-Path $env:LOCALAPPDATA "Programs\Claude"
+    }
+    if ($env:ProgramFiles) {
+        $roots += Join-Path $env:ProgramFiles "Claude"
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $roots += Join-Path ${env:ProgramFiles(x86)} "Claude"
+    }
+
+    return $roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+}
+
+function Get-ClaudeSearchRoots {
+    $roots = @()
+
+    if ($env:LOCALAPPDATA) {
+        $roots += $env:LOCALAPPDATA
+    }
+    if ($env:ProgramFiles) {
+        $roots += $env:ProgramFiles
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $roots += ${env:ProgramFiles(x86)}
+    }
+
+    return $roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+}
+
+function Search-ClaudeAppsInRoot {
+    param(
+        [System.Collections.ArrayList]$Candidates,
+        [string]$Root,
+        [int]$MaxDepth = 4
+    )
+
+    if (-not (Test-Path -LiteralPath $Root)) {
+        return
+    }
+
+    $rootPath = (Resolve-Path -LiteralPath $Root).Path
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue([pscustomobject]@{ Path = $rootPath; Depth = 0 })
+
+    while ($queue.Count -gt 0) {
+        $entry = $queue.Dequeue()
+        if ($entry.Depth -gt $MaxDepth) {
+            continue
+        }
+
+        if ((Split-Path -Leaf $entry.Path) -eq "resources") {
+            Add-ClaudeAppCandidate -Candidates $Candidates -Path (Split-Path -Parent $entry.Path)
+            continue
+        }
+
+        if ($entry.Depth -eq $MaxDepth) {
+            continue
+        }
+
+        $children = Get-ChildItem -LiteralPath $entry.Path -Directory -ErrorAction SilentlyContinue
+        foreach ($child in $children) {
+            $childName = $child.Name
+            if ($childName -like "*Claude*" -or $childName -like "app-*" -or $childName -eq "resources" -or $entry.Path -like "*Claude*") {
+                $queue.Enqueue([pscustomobject]@{ Path = $child.FullName; Depth = $entry.Depth + 1 })
+            }
+        }
+    }
+}
+
+function Get-ClaudeMsixInstalls {
+    $installs = @()
+
+    try {
+        $packages = Get-AppxPackage -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -eq "Claude" -or
+                $_.Name -like "Anthropic.Claude*" -or
+                $_.PackageFamilyName -like "Claude_*"
+            }
+
+        foreach ($package in $packages) {
+            if ($package.InstallLocation) {
+                $installs += $package.InstallLocation
+            }
+        }
+    } catch {}
+
+    if ($env:LOCALAPPDATA) {
+        $packageRoot = Join-Path $env:LOCALAPPDATA "Packages\Claude_pzs8sxrjxfjjc"
+        if (Test-Path -LiteralPath $packageRoot) {
+            $installs += $packageRoot
+        }
+    }
+
+    return $installs | Where-Object { $_ } | Select-Object -Unique
+}
+
 function Resolve-PackFile {
     param(
         [string]$RelativePath,
@@ -108,19 +401,42 @@ function Resolve-PackFile {
 }
 
 function Get-LatestClaudeApp {
-    $root = Join-Path $env:LOCALAPPDATA "AnthropicClaude"
-    if (-not (Test-Path -LiteralPath $root)) {
-        throw "Claude install directory was not found: $root"
+    $candidates = New-Object System.Collections.ArrayList
+    $searchedRoots = @()
+
+    $discoveredPaths = @()
+    $discoveredPaths += Get-ClaudePathsFromProcess
+    $discoveredPaths += Get-ClaudeExecutablePathsFromShortcut
+    $discoveredPaths += Get-ClaudePathsFromRegistry
+    $discoveredPaths += Get-ClaudePathsFromCommand
+
+    foreach ($path in ($discoveredPaths | Where-Object { $_ } | Select-Object -Unique)) {
+        Add-ClaudeAppCandidatesFromPath -Candidates $candidates -Path $path
     }
 
-    $apps = Get-ChildItem -LiteralPath $root -Directory -Filter "app-*" |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "resources") } |
-        Sort-Object -Property @{ Expression = {
-            try { [version]($_.Name -replace "^app-", "") } catch { [version]"0.0.0" }
-        }; Descending = $true }
+    foreach ($root in Get-ClaudeInstallRoots) {
+        $searchedRoots += $root
+        Add-ClaudeAppCandidatesFromPath -Candidates $candidates -Path $root
+    }
+
+    if ($candidates.Count -eq 0) {
+        foreach ($root in Get-ClaudeSearchRoots) {
+            $searchedRoots += "$root (limited search)"
+            Search-ClaudeAppsInRoot -Candidates $candidates -Root $root
+        }
+    }
+
+    $apps = $candidates | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }
 
     if (-not $apps -or $apps.Count -eq 0) {
-        throw "Claude app-* version directory was not found."
+        $msixInstalls = Get-ClaudeMsixInstalls
+        if ($msixInstalls -and $msixInstalls.Count -gt 0) {
+            $msixText = $msixInstalls -join "; "
+            throw "Writable Claude resources directory was not found. Detected MSIX/Store Claude installation: $msixText. This language pack can patch the classic Squirrel install only, because MSIX app resources are protected by Windows. Install the classic Claude Desktop build, or set CLAUDE_INSTALL_DIR to a writable Claude app directory that contains a resources folder."
+        }
+
+        $searchedText = $searchedRoots -join "; "
+        throw "Claude install directory was not found. Searched: $searchedText. If Claude is installed in a custom location, set CLAUDE_INSTALL_DIR to the Claude app directory that contains resources."
     }
     return $apps[0]
 }

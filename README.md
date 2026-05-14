@@ -8,6 +8,8 @@
 %LOCALAPPDATA%\AnthropicClaude\app-*\resources
 ```
 
+如果你的 Claude 安装在自定义位置，可以先设置 `CLAUDE_INSTALL_DIR`，让脚本指向包含 `resources` 文件夹的 Claude app 目录。
+
 ## 快速使用
 
 1. 关闭 Claude Desktop。
@@ -42,6 +44,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\LanguagePack.ps1 -Restore
 - Claude 更新后可能覆盖 `resources` 目录，届时重新运行安装脚本即可。
 - 如果语言菜单仍未出现中文，请完全退出 Claude 后重新运行安装脚本。
 - 本项目仅用于个人学习与本地界面汉化，不属于 Anthropic 官方项目。
+
+## 常见问题
+
+### 提示 `Claude install directory was not found`
+
+这个错误通常表示当前电脑没有安装经典 Squirrel 版 Claude Desktop，或 Claude 安装在脚本未能自动发现的位置。
+
+脚本会自动从以下来源查找 Claude：
+
+- 正在运行的 `claude.exe` 进程
+- 开始菜单和桌面中的 Claude 快捷方式
+- Windows 卸载注册表中的 Claude 安装信息
+- `claude.exe` 命令路径
+- 常见安装目录和限深目录扫描
+
+```text
+%LOCALAPPDATA%\AnthropicClaude
+%LOCALAPPDATA%\Programs\Claude
+%ProgramFiles%\Claude
+%ProgramFiles(x86)%\Claude
+```
+
+如果你知道 Claude 的实际位置，可以在命令行中这样运行：
+
+```powershell
+$env:CLAUDE_INSTALL_DIR="D:\Your\Claude\app-0.0.0"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\LanguagePack.ps1
+```
+
+### 提示检测到 `MSIX/Store Claude installation`
+
+新版 Claude 在部分 Windows 环境中会以 MSIX/Store 包形式安装，安装包资源通常位于 `C:\Program Files\WindowsApps\Claude_*`，应用数据位于 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc`。
+
+这类安装包的程序资源受 Windows 保护，本语言包需要修改 `resources` 目录，因此只支持经典 Squirrel 安装版。遇到这种提示时，请改用经典 Claude Desktop 安装包，或将 `CLAUDE_INSTALL_DIR` 指向一个可写且包含 `resources` 的 Claude app 目录。
 
 ## 鸣谢与授权
 
