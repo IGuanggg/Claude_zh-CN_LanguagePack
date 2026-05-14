@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$script:ClaudeWritableCopyPath = $null
 
 function Write-Info {
     param([string]$Message)
@@ -318,6 +319,148 @@ function Get-ClaudeSearchRoots {
     return $roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
 }
 
+function Get-ClaudeWritableCopyRoot {
+    if (-not $env:LOCALAPPDATA) {
+        throw "LOCALAPPDATA is not available; cannot create a writable Claude copy."
+    }
+
+    return Join-Path $env:LOCALAPPDATA "ClaudeChinesePack\MSIXCopy"
+}
+
+function Get-ClaudeMsixAppPaths {
+    $paths = @()
+
+    foreach ($install in Get-ClaudeMsixInstalls) {
+        Add-ClaudeAppCandidatePath -Paths ([ref]$paths) -Path $install
+        Add-ClaudeAppCandidatePath -Paths ([ref]$paths) -Path (Join-Path $install "app")
+    }
+
+    return $paths | Where-Object { $_ } | Select-Object -Unique
+}
+
+function Add-ClaudeAppCandidatePath {
+    param(
+        [ref]$Paths,
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "resources"))) {
+        return
+    }
+
+    $Paths.Value += (Resolve-Path -LiteralPath $Path).Path
+}
+
+function Copy-ClaudeMsixAppToWritablePath {
+    param([string]$SourceAppPath)
+
+    if (-not (Test-Path -LiteralPath (Join-Path $SourceAppPath "resources"))) {
+        throw "MSIX Claude app resources directory was not found: $SourceAppPath"
+    }
+
+    $version = Get-ClaudeAppVersion -Path $SourceAppPath
+    $copyRoot = Get-ClaudeWritableCopyRoot
+    $targetAppPath = Join-Path $copyRoot "app-$version"
+    $targetResources = Join-Path $targetAppPath "resources"
+    $targetEnglish = Join-Path $targetResources "en-US.json"
+
+    if (Test-Path -LiteralPath $targetEnglish) {
+        Write-Info "Using existing writable Claude copy: $targetAppPath"
+        $script:ClaudeWritableCopyPath = $targetAppPath
+        return $targetAppPath
+    }
+
+    if (Test-Path -LiteralPath $targetAppPath) {
+        $resolvedTarget = (Resolve-Path -LiteralPath $targetAppPath).Path
+        $resolvedRoot = if (Test-Path -LiteralPath $copyRoot) { (Resolve-Path -LiteralPath $copyRoot).Path } else { $copyRoot }
+        if (-not $resolvedTarget.StartsWith($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove unexpected copy target: $resolvedTarget"
+        }
+        Remove-Item -LiteralPath $targetAppPath -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Path $targetAppPath -Force | Out-Null
+    Write-Info "Copying protected MSIX Claude app to writable path: $targetAppPath"
+
+    $robocopy = Join-Path $env:SystemRoot "System32\robocopy.exe"
+    if (Test-Path -LiteralPath $robocopy) {
+        & $robocopy $SourceAppPath $targetAppPath /E /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) {
+            throw "Failed to copy MSIX Claude app with robocopy. Exit code: $LASTEXITCODE"
+        }
+    } else {
+        Copy-Item -Path (Join-Path $SourceAppPath "*") -Destination $targetAppPath -Recurse -Force
+    }
+
+    if (-not (Test-Path -LiteralPath $targetEnglish)) {
+        throw "Writable Claude copy was created, but resources\en-US.json was not found: $targetAppPath"
+    }
+
+    [System.IO.File]::WriteAllText((Join-Path $copyRoot "source.txt"), $SourceAppPath + [Environment]::NewLine, $Utf8NoBom)
+    $script:ClaudeWritableCopyPath = $targetAppPath
+    return $targetAppPath
+}
+
+function Find-ClaudeLauncher {
+    param([string]$AppPath)
+
+    $launcherCandidates = @(
+        (Join-Path (Split-Path -Parent $AppPath) "claude.exe"),
+        (Join-Path $AppPath "claude.exe"),
+        (Join-Path $AppPath "Claude.exe")
+    )
+
+    foreach ($launcher in $launcherCandidates) {
+        if (Test-Path -LiteralPath $launcher) {
+            return $launcher
+        }
+    }
+
+    return $null
+}
+
+function Install-ClaudeWritableCopyShortcut {
+    param([string]$AppPath)
+
+    $launcher = Find-ClaudeLauncher -AppPath $AppPath
+    if (-not $launcher) {
+        Write-Info "Writable copy launcher was not found. Please start Claude manually from: $AppPath"
+        return
+    }
+
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $desktop = [Environment]::GetFolderPath("Desktop")
+        if ($desktop) {
+            $shortcutPath = Join-Path $desktop "Claude Chinese.lnk"
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = $launcher
+            $shortcut.WorkingDirectory = Split-Path -Parent $launcher
+            $shortcut.IconLocation = "$launcher,0"
+            $shortcut.Save()
+            Write-Info "Desktop shortcut created: $shortcutPath"
+        }
+
+        $startMenu = [Environment]::GetFolderPath("StartMenu")
+        if ($startMenu) {
+            $programs = Join-Path $startMenu "Programs"
+            $shortcutPath = Join-Path $programs "Claude Chinese.lnk"
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = $launcher
+            $shortcut.WorkingDirectory = Split-Path -Parent $launcher
+            $shortcut.IconLocation = "$launcher,0"
+            $shortcut.Save()
+            Write-Info "Start menu shortcut created: $shortcutPath"
+        }
+    } catch {
+        Write-Info "Shortcut creation failed. You can start Claude from: $launcher"
+    }
+}
+
 function Search-ClaudeAppsInRoot {
     param(
         [System.Collections.ArrayList]$Candidates,
@@ -443,6 +586,14 @@ function Get-LatestClaudeApp {
         foreach ($root in Get-ClaudeSearchRoots) {
             $searchedRoots += "$root (limited search)"
             Search-ClaudeAppsInRoot -Candidates $candidates -Root $root
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        $msixAppPaths = Get-ClaudeMsixAppPaths | Where-Object { Test-ClaudeProtectedAppPath -Path $_ }
+        if ($msixAppPaths -and $msixAppPaths.Count -gt 0) {
+            $copyAppPath = Copy-ClaudeMsixAppToWritablePath -SourceAppPath $msixAppPaths[0]
+            Add-ClaudeAppCandidate -Candidates $candidates -Path $copyAppPath
         }
     }
 
@@ -595,8 +746,12 @@ try {
         Write-Info "Claude locale was set to zh-CN."
     }
 
-    $launcher = Join-Path (Split-Path -Parent $app.FullName) "claude.exe"
-    if (Test-Path -LiteralPath $launcher) {
+    if ($script:ClaudeWritableCopyPath) {
+        Install-ClaudeWritableCopyShortcut -AppPath $script:ClaudeWritableCopyPath
+    }
+
+    $launcher = Find-ClaudeLauncher -AppPath $app.FullName
+    if ($launcher -and (Test-Path -LiteralPath $launcher)) {
         Start-Process -FilePath $launcher
         Write-Info "Claude was restarted."
     } else {
