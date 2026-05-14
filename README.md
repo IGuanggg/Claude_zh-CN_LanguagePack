@@ -77,7 +77,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\LanguagePack.ps1
 
 新版 Claude 在部分 Windows 环境中会以 MSIX/Store 包形式安装，安装包资源通常位于 `C:\Program Files\WindowsApps\Claude_*`，应用数据位于 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc`。
 
-这类安装包的程序资源受 Windows 保护，本语言包需要修改 `resources` 目录，因此只支持经典 Squirrel 安装版。遇到这种提示时，请改用经典 Claude Desktop 安装包，或将 `CLAUDE_INSTALL_DIR` 指向一个可写且包含 `resources` 的 Claude app 目录。
+这类安装包的程序资源受 Windows 保护，本语言包需要修改 `resources` 目录，因此只支持经典 Squirrel 安装版。脚本即使自动搜索到 `WindowsApps` 里的 Claude，也会跳过这个受保护目录，避免出现 `en-US.json.bak` 访问被拒绝。遇到这种提示时，请改用经典 Claude Desktop 安装包，或将 `CLAUDE_INSTALL_DIR` 指向一个可写且包含 `resources` 的 Claude app 目录。
 
 ## 鸣谢与授权
 

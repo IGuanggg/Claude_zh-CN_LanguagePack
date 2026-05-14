@@ -90,6 +90,22 @@ function Get-ClaudeAppVersion {
     return [version]"0.0.0"
 }
 
+function Test-ClaudeProtectedAppPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    try {
+        $fullPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    } catch {
+        $fullPath = [Environment]::ExpandEnvironmentVariables($Path)
+    }
+
+    return $fullPath -match "\\WindowsApps\\Claude_"
+}
+
 function Add-ClaudeAppCandidate {
     param(
         [System.Collections.ArrayList]$Candidates,
@@ -106,6 +122,10 @@ function Add-ClaudeAppCandidate {
     }
 
     $fullPath = (Resolve-Path -LiteralPath $Path).Path
+    if (Test-ClaudeProtectedAppPath -Path $fullPath) {
+        return
+    }
+
     if ($Candidates | Where-Object { $_.FullName -eq $fullPath }) {
         return
     }
