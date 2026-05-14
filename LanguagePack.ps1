@@ -590,7 +590,7 @@ function Get-LatestClaudeApp {
     }
 
     if ($candidates.Count -eq 0) {
-        $msixAppPaths = Get-ClaudeMsixAppPaths | Where-Object { Test-ClaudeProtectedAppPath -Path $_ }
+        $msixAppPaths = @(Get-ClaudeMsixAppPaths | Where-Object { Test-ClaudeProtectedAppPath -Path $_ })
         if ($msixAppPaths -and $msixAppPaths.Count -gt 0) {
             $copyAppPath = Copy-ClaudeMsixAppToWritablePath -SourceAppPath $msixAppPaths[0]
             Add-ClaudeAppCandidate -Candidates $candidates -Path $copyAppPath
