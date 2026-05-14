@@ -85,13 +85,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\LanguagePack.ps1
 
 安装完成后，脚本会创建 `Claude Chinese` 桌面快捷方式和开始菜单快捷方式。之后请使用这个快捷方式启动中文版本；如果继续打开系统原来的 Claude 快捷方式，启动的仍然是受保护的 MSIX 原版。
 
-首次为 MSIX 版创建可写副本时，脚本会尝试从下面的 MSIX 数据目录迁移原 Claude 配置到 `%APPDATA%\Claude`，再只修改 `locale` 字段：
+MSIX 版的用户配置仍然保留在原来的包数据目录中：
 
 ```text
 %LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude
 ```
 
-如果你之前运行旧版脚本后感觉配置变空，原配置通常仍在上面的 MSIX 数据目录中。更新脚本后重新运行一次即可迁移回来。
+脚本不会再把这份配置搬到 `%APPDATA%\Claude`。安装完成后生成的 `Claude Chinese` 启动器会临时设置 `APPDATA` / `LOCALAPPDATA`，让可写副本继续读取原 MSIX 配置目录。因此账号、历史记录、偏好设置会跟原 Claude 保持一致。
+
+如果你之前运行旧版脚本后感觉配置变空，原配置通常仍在上面的 MSIX 数据目录中。更新脚本后重新运行一次，并使用新生成的 `Claude Chinese` 快捷方式启动即可。
 
 如果 Claude 更新后中文失效，重新运行安装脚本即可。脚本会按新版本重新复制并打补丁。
 
