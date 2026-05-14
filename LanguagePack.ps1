@@ -804,7 +804,7 @@ function Resolve-PackFile {
         return $FallbackPath
     }
 
-    $rawBase = "https://raw.githubusercontent.com/pheohu-42/Claude_zh-CN_LanguagePack/master"
+    $rawBase = "https://raw.githubusercontent.com/IGuanggg/Claude_zh-CN_LanguagePack/main"
     $urlPath = $RelativePath -replace "\\", "/"
     $url = "$rawBase/$urlPath"
     $dir = Split-Path -Parent $path
